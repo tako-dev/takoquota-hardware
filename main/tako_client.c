@@ -50,12 +50,15 @@ static esp_err_t post_json(const char *path, const char *body, cJSON **result)
     char url[160];
     snprintf(url, sizeof(url), "%s%s", TAKO_BASE_URL, path);
 
-    http_response_t response = { 0 };
+    http_response_t *response = calloc(1, sizeof(*response));
+    if (response == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
     esp_http_client_config_t config = {
         .url = url,
         .method = HTTP_METHOD_POST,
         .event_handler = http_event,
-        .user_data = &response,
+        .user_data = response,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = 10000,
         .buffer_size = 2048,
@@ -63,6 +66,7 @@ static esp_err_t post_json(const char *path, const char *body, cJSON **result)
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == NULL) {
+        free(response);
         return ESP_ERR_NO_MEM;
     }
 
@@ -74,18 +78,22 @@ static esp_err_t post_json(const char *path, const char *body, cJSON **result)
 
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "HTTPS request failed: %s", esp_err_to_name(err));
+        free(response);
         return err;
     }
     if (status != 200) {
         ESP_LOGE(TAG, "Tako returned HTTP %d", status);
+        free(response);
         return ESP_FAIL;
     }
-    if (response.overflow || response.length == 0) {
+    if (response->overflow || response->length == 0) {
         ESP_LOGE(TAG, "Tako response is empty or too large");
+        free(response);
         return ESP_ERR_INVALID_SIZE;
     }
 
-    *result = cJSON_ParseWithLength(response.data, response.length);
+    *result = cJSON_ParseWithLength(response->data, response->length);
+    free(response);
     if (*result == NULL) {
         ESP_LOGE(TAG, "Tako returned invalid JSON");
         return ESP_ERR_INVALID_RESPONSE;
