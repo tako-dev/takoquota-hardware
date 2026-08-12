@@ -28,3 +28,6 @@ esp_err_t epd_clear(void);
  * state, but epd_init() must be called again before the next update.
  */
 esp_err_t epd_sleep(void);
+
+/* Cut the panel power rail, including after a failed init or refresh. */
+void epd_power_off(void);

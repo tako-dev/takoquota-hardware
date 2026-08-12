@@ -1,7 +1,9 @@
 # epaper-154
 
 Lights up the 1.54" 200x200 e-paper display on a **Waveshare ESP32-S3-Touch-ePaper-1.54 (V2)**.
-Draws a quota snapshot, then puts the panel to sleep — the image stays on screen without power.
+Fetches live Tako quota data over Wi-Fi, updates the display, then enters deep
+sleep until the configured refresh interval. The image stays visible while the
+ESP32 and panel power rail are off.
 
 Built and verified against ESP-IDF **v5.2.3** on real hardware.
 
@@ -40,15 +42,76 @@ idf.py -p COM19 flash monitor
 
 Note the export script rejects MSys/MinGW shells, so run it from PowerShell.
 
+## Bluetooth setup
+
+On first boot, the display shows `BLE SETUP` and the device advertises as
+`TAKO-EPAPER`. Configuration is stored in NVS and contains:
+
+- Wi-Fi SSID and password
+- Tako API key
+- refresh interval in minutes (`1` to `10080`, default `60`)
+
+The password and API key characteristics require an encrypted BLE connection
+and cannot be read back. They are never printed to the serial log.
+
+The included Windows/Linux/macOS helper needs Python 3 and Bleak:
+
+```powershell
+python -m pip install -r tools/requirements.txt
+python tools/configure_ble.py --ssid "My WiFi" --interval 60
+```
+
+It securely prompts for the Wi-Fi password and Tako API key. Windows or the
+phone may show a BLE pairing confirmation the first time.
+
+For a phone, a generic GATT client such as nRF Connect can also be used. Connect
+and pair with `TAKO-EPAPER`, then write UTF-8 text to these characteristics:
+
+| Value | UUID |
+|---|---|
+| SSID | `7b1e0001-b5a3-f393-e0a9-e50e24dcca9e` |
+| Wi-Fi password | `7b1e0002-b5a3-f393-e0a9-e50e24dcca9e` |
+| Tako API key | `7b1e0003-b5a3-f393-e0a9-e50e24dcca9e` |
+| Refresh minutes | `7b1e0004-b5a3-f393-e0a9-e50e24dcca9e` |
+| Command (`save`) | `7b1e0005-b5a3-f393-e0a9-e50e24dcca9e` |
+| Status (read/notify) | `7b1e0006-b5a3-f393-e0a9-e50e24dcca9e` |
+
+To change settings later, press the on-board **BOOT** button while the device is
+sleeping. This wakes it directly into BLE setup. Do not hold BOOT while pressing
+reset because GPIO0 is also the ESP32-S3 download-mode strap. A timer wake skips
+Bluetooth, connects to Wi-Fi, refreshes Tako quota, and immediately returns to
+deep sleep.
+
+If a scheduled refresh cannot connect or fetch data, the previous successful
+e-paper image is preserved and the device retries at the next interval.
+
+## Tako API
+
+The firmware follows Tako CLI's quota flow against `https://tako.shiroha.tech`:
+
+1. The configured key is validated once with
+   `POST /apiStats/api/get-key-id`; the returned numeric user ID is cached.
+2. Each refresh calls `POST /apiStats/api/user-quota` and renders the rolling
+   window and weekly `usage` / `plan` values.
+
+HTTPS certificates are validated with ESP-IDF's built-in CA bundle. Device time
+is synchronized over SNTP before the request and the footer uses China Standard
+Time (`UTC+8`).
+
 ## Layout
 
 | File | Purpose |
 |---|---|
 | `main/board.h` | pin assignments and SPI config |
+| `main/ble_config.c` | encrypted BLE GATT setup service |
+| `main/device_config.c` | NVS-backed Wi-Fi, key, and interval settings |
 | `main/epd_1in54.c` | SSD1681 init / refresh / sleep over SPI |
 | `main/epd_paint.c` | 1bpp framebuffer: pixels, rects, lines, text |
 | `main/font8x8.c` | 5x7 ASCII glyphs in 8x8 cells |
-| `main/main.c` | quota screen and demo flow |
+| `main/network.c` | Wi-Fi station and SNTP lifecycle |
+| `main/tako_client.c` | HTTPS API requests and quota parsing |
+| `main/main.c` | configuration, refresh, display, and deep-sleep flow |
+| `tools/configure_ble.py` | desktop BLE provisioning helper |
 
 ## PSRAM
 

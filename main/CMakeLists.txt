@@ -1,9 +1,21 @@
 idf_component_register(
     SRCS
         "main.c"
+        "ble_config.c"
+        "device_config.c"
         "epd_1in54.c"
         "epd_paint.c"
         "font8x8.c"
+        "network.c"
+        "tako_client.c"
     INCLUDE_DIRS "."
-    REQUIRES driver
+    REQUIRES
+        bt
+        driver
+        esp_http_client
+        esp_netif
+        esp_wifi
+        json
+        mbedtls
+        nvs_flash
 )

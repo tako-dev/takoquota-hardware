@@ -228,6 +228,10 @@ esp_err_t epd_init(void)
     if (s_spi == NULL) {
         ESP_RETURN_ON_ERROR(epd_gpio_init(), TAG, "gpio init");
         ESP_RETURN_ON_ERROR(epd_spi_init(), TAG, "spi init");
+    } else {
+        gpio_set_level(EPD_PIN_PWR_EN, 0);
+        gpio_set_level(EPD_PIN_RST, 1);
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 
     epd_hw_reset();
@@ -336,7 +340,20 @@ esp_err_t epd_sleep(void)
     ESP_RETURN_ON_ERROR(epd_data1(0x01), TAG, "sleep mode");
     vTaskDelay(pdMS_TO_TICKS(100));
 
-    /* The image persists without power — that is the whole point of e-paper. */
-    ESP_LOGI(TAG, "panel asleep");
+    epd_power_off();
+
+    /* The image persists after the active-low panel power rail is switched off. */
+    ESP_LOGI(TAG, "panel asleep and powered off");
     return ESP_OK;
+}
+
+void epd_power_off(void)
+{
+    gpio_config_t power = {
+        .pin_bit_mask = 1ULL << EPD_PIN_PWR_EN,
+        .mode = GPIO_MODE_OUTPUT,
+    };
+    if (gpio_config(&power) == ESP_OK) {
+        gpio_set_level(EPD_PIN_PWR_EN, 1);
+    }
 }

@@ -6,3 +6,5 @@ dependencies.lock
 bright.jpg
 shot_*.jpg
 render_preview.png
+__pycache__/
+.venv/

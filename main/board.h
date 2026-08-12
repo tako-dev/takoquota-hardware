@@ -23,6 +23,9 @@
 #define EPD_PIN_SCLK    GPIO_NUM_12
 #define EPD_PIN_MOSI    GPIO_NUM_13
 
+/* Hold the on-board BOOT button while resetting to reopen BLE setup. */
+#define BOARD_PIN_BOOT  GPIO_NUM_0
+
 /*
  * GPIO6 carries the EPD3V3_EN net (Q2, an AO3401 P-channel MOSFET, gate pulled
  * up by R71 10K).
