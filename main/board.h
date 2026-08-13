@@ -51,3 +51,8 @@
  * over the flat-flex connector while still pushing a 5KB frame in a few ms.
  */
 #define EPD_SPI_CLOCK_HZ  (10 * 1000 * 1000)
+
+/*
+ * Battery voltage is read on ADC1 channel 3 (GPIO4) through the on-board 1/2
+ * divider. The channel and divider constants live in battery.c.
+ */

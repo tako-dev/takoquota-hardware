@@ -4,6 +4,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "battery.h"
 #include "ble_config.h"
 #include "board.h"
 #include "device_config.h"
@@ -18,12 +19,25 @@
 #include "freertos/task.h"
 #include "network.h"
 #include "nvs_flash.h"
+#include "serial_config.h"
 #include "tako_client.h"
 
 static const char *TAG = "main";
 
 /* One 200x200 mono frame is 5000 bytes - fine as a static allocation. */
 static uint8_t s_frame[EPD_BUF_SIZE];
+
+/* Serial configuration runs on its own copy so it cannot race the BLE path. */
+static device_config_t s_serial_cfg;
+
+static void serial_config_task(void *arg)
+{
+    device_config_t *cfg = (device_config_t *)arg;
+    if (serial_config_run(cfg, 0) == ESP_OK) {
+        ble_config_abort();  /* serial saved first; stop BLE */
+    }
+    vTaskDelete(NULL);
+}
 
 static int right_x(int x_right, const char *text, int scale)
 {
@@ -68,13 +82,13 @@ static void log_display_result(const char *screen, esp_err_t err)
 
 static esp_err_t show_setup_screen(void)
 {
-    draw_header("BLE SETUP");
+    draw_header("SETUP");
     draw_centered(48, BLE_CONFIG_DEVICE_NAME, 1);
     epd_paint_rect(s_frame, 22, 72, 178, 127, EPD_BLACK);
-    draw_centered(83, "PAIR WITH PHONE", 1);
+    draw_centered(83, "USB SERIAL OR BLE", 1);
     draw_centered(103, "WAITING...", 1);
     draw_centered(148, "CONFIGURE THEN SAVE", 1);
-    draw_centered(172, "BLE STAYS ON", 1);
+    draw_centered(172, "FIRST SAVE WINS", 1);
     return display_frame();
 }
 
@@ -137,7 +151,7 @@ static void draw_quota_row(int y0, const char *label, const char *number,
                         x0 + 2 + fill_w, bar_y + bar_h - 2, EPD_BLACK);
 }
 
-static esp_err_t show_quota_screen(const tako_quota_t *quota)
+static esp_err_t show_quota_screen(const tako_quota_t *quota, int battery_pct)
 {
     char window_label[24];
     if (quota->window_minutes % 60 == 0) {
@@ -168,9 +182,16 @@ static esp_err_t show_quota_screen(const tako_quota_t *quota)
     epd_paint_fill_rect(s_frame, 0, EPD_HEIGHT - 18, EPD_WIDTH, EPD_HEIGHT,
                         EPD_BLACK);
     epd_paint_text(s_frame, 8, EPD_HEIGHT - 13, "UPDATED", EPD_WHITE);
-    epd_paint_text(s_frame,
-                   right_x(EPD_WIDTH - 8, quota->fetched_at, 1),
-                   EPD_HEIGHT - 13, quota->fetched_at, EPD_WHITE);
+
+    int time_x = right_x(EPD_WIDTH - 8, quota->fetched_at, 1);
+    if (battery_pct >= 0) {
+        char batt[16];
+        snprintf(batt, sizeof(batt), "%d%%", battery_pct);
+        int batt_x = right_x(EPD_WIDTH - 8, batt, 1);
+        epd_paint_text(s_frame, batt_x, EPD_HEIGHT - 13, batt, EPD_WHITE);
+        time_x = right_x(batt_x - 6, quota->fetched_at, 1);
+    }
+    epd_paint_text(s_frame, time_x, EPD_HEIGHT - 13, quota->fetched_at, EPD_WHITE);
     return display_frame();
 }
 
@@ -234,11 +255,29 @@ void app_main(void)
     bool had_valid_config = device_config_is_valid(&config);
     bool setup = !had_valid_config || configuration_requested();
     if (setup) {
-        ESP_LOGI(TAG, "entering BLE configuration mode");
+        ESP_LOGI(TAG, "entering configuration mode (USB serial + BLE)");
         log_display_result("setup", show_setup_screen());
-        esp_err_t err = ble_config_run(&config, 0);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "BLE configuration stopped: %s", esp_err_to_name(err));
+
+        s_serial_cfg = config;
+        TaskHandle_t serial_task = NULL;
+        xTaskCreate(serial_config_task, "serial_cfg", 4096, &s_serial_cfg, 2,
+                    &serial_task);
+
+        esp_err_t cfg_err = ble_config_run(&config, 0);
+        if (cfg_err == ESP_OK) {
+            serial_config_abort();  /* BLE saved first; stop serial */
+        } else if (cfg_err != ESP_ERR_TIMEOUT) {
+            ESP_LOGE(TAG, "BLE configuration stopped: %s", esp_err_to_name(cfg_err));
+        }
+
+        if (serial_task != NULL) {
+            while (eTaskGetState(serial_task) != eDeleted) {
+                vTaskDelay(pdMS_TO_TICKS(50));
+            }
+        }
+        device_config_load(&config);
+
+        if (!device_config_is_valid(&config)) {
             enter_deep_sleep(config.refresh_minutes);
         }
     }
@@ -255,7 +294,8 @@ void app_main(void)
     network_stop();
 
     if (err == ESP_OK) {
-        log_display_result("quota", show_quota_screen(&quota));
+        int battery_pct = battery_read_percent();
+        log_display_result("quota", show_quota_screen(&quota, battery_pct));
     } else if (!had_valid_config || setup) {
         const char *reason = err == ESP_ERR_TIMEOUT ? "WIFI FAILED" : "FETCH FAILED";
         log_display_result("error", show_error_screen(reason));

@@ -9,3 +9,6 @@
 
 /* A timeout of zero keeps configuration mode active until settings are saved. */
 esp_err_t ble_config_run(device_config_t *config, uint32_t timeout_ms);
+
+/* Ask a running ble_config_run() to stop early (used when serial saves first). */
+void ble_config_abort(void);

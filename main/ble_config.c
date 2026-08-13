@@ -55,8 +55,14 @@ static uint16_t s_status_handle;
 static uint16_t s_connection_handle = BLE_HS_CONN_HANDLE_NONE;
 static bool s_finished;
 static char s_status[48];
+static volatile bool s_abort;
 
 void ble_store_config_init(void);
+
+void ble_config_abort(void)
+{
+    s_abort = true;
+}
 
 static int config_access(uint16_t conn_handle, uint16_t attr_handle,
                          struct ble_gatt_access_ctxt *ctxt, void *arg);
@@ -361,6 +367,7 @@ esp_err_t ble_config_run(device_config_t *config, uint32_t timeout_ms)
     s_pending = *config;
     s_result = config;
     s_finished = false;
+    s_abort = false;
     s_status_handle = 0;
     s_connection_handle = BLE_HS_CONN_HANDLE_NONE;
     set_status(device_config_is_valid(config) ? "READY" : "NEEDS CONFIG");
@@ -412,9 +419,20 @@ esp_err_t ble_config_run(device_config_t *config, uint32_t timeout_ms)
         err = ESP_ERR_TIMEOUT;
     } else {
         ESP_LOGI(TAG, "advertising as %s", BLE_CONFIG_DEVICE_NAME);
-        TickType_t wait = timeout_ms == 0 ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
-        EventBits_t bits = xEventGroupWaitBits(s_events, BLE_SAVED_BIT, pdFALSE,
-                                               pdFALSE, wait);
+        const TickType_t slice = pdMS_TO_TICKS(200);
+        TickType_t deadline = timeout_ms == 0
+                                  ? 0
+                                  : xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
+        EventBits_t bits = 0;
+        while (!s_abort) {
+            bits = xEventGroupWaitBits(s_events, BLE_SAVED_BIT, pdFALSE, pdFALSE, slice);
+            if (bits & BLE_SAVED_BIT) {
+                break;
+            }
+            if (timeout_ms != 0 && xTaskGetTickCount() >= deadline) {
+                break;
+            }
+        }
         err = (bits & BLE_SAVED_BIT) != 0 ? ESP_OK : ESP_ERR_TIMEOUT;
     }
 

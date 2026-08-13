@@ -7,6 +7,10 @@ ESP32 and panel power rail are off.
 
 Built and verified against ESP-IDF **v5.2.3** on real hardware.
 
+![实拍图](docs/实拍图.png)
+
+购买地址：<https://detail.tmall.com/item.htm?id=973812969745>
+
 ## Pin map
 
 From the [official schematic](https://files.waveshare.com/wiki/ESP32-S3-ePaper-1.54/ESP32-S3-Touch-ePaper-1.54-Schematic.pdf),
@@ -23,6 +27,7 @@ which lists these twice (module IO table + J10 connector); both copies agree.
 | EPD3V3_EN | 6 (active low) |
 | EPD_TP_RST / EPD_TP_INT | 7 / 21 |
 | Board I2C SDA / SCL | 47 / 48 |
+| Battery ADC | 4 (ADC1 CH3, 1/2 divider) |
 
 Two things worth knowing:
 
@@ -85,6 +90,31 @@ deep sleep.
 If a scheduled refresh cannot connect or fetch data, the previous successful
 e-paper image is preserved and the device retries at the next interval.
 
+## Serial (USB) setup
+
+Instead of Bluetooth you can configure the device over the native USB port.
+Open the USB serial console (the same port as the log output, e.g. COM19) and
+type these commands while the device shows `SETUP`:
+
+| Command | Effect |
+|---|---|
+| `help` | list commands |
+| `show` | print pending config (password and API key masked) |
+| `ssid <text>` | set Wi-Fi SSID |
+| `pass <text>` | set Wi-Fi password |
+| `apikey <text>` | set Tako API key |
+| `interval <min>` | set refresh minutes (1..10080) |
+| `save` | validate and save |
+
+Serial and BLE are both active during setup; the first channel to save wins.
+
+## Battery
+
+The battery level is read on ADC1 channel 3 (GPIO4, 1/2 divider) and shown as a
+percentage at the right end of the footer. The mapping follows a rough LiPo
+discharge curve, so treat it as an estimate. When no battery is fitted (USB
+powered) the percentage is omitted.
+
 ## Tako API
 
 The firmware follows Tako CLI's quota flow against `https://tako.shiroha.tech`:
@@ -103,12 +133,14 @@ Time (`UTC+8`).
 | File | Purpose |
 |---|---|
 | `main/board.h` | pin assignments and SPI config |
+| `main/battery.c` | battery ADC read and percentage mapping |
 | `main/ble_config.c` | encrypted BLE GATT setup service |
 | `main/device_config.c` | NVS-backed Wi-Fi, key, and interval settings |
 | `main/epd_1in54.c` | SSD1681 init / refresh / sleep over SPI |
 | `main/epd_paint.c` | 1bpp framebuffer: pixels, rects, lines, text |
 | `main/font8x8.c` | 5x7 ASCII glyphs in 8x8 cells |
 | `main/network.c` | Wi-Fi station and SNTP lifecycle |
+| `main/serial_config.c` | USB serial command-line configuration |
 | `main/tako_client.c` | HTTPS API requests and quota parsing |
 | `main/main.c` | configuration, refresh, display, and deep-sleep flow |
 | `tools/configure_ble.py` | desktop BLE provisioning helper |

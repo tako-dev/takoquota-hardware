@@ -1,17 +1,20 @@
 idf_component_register(
     SRCS
         "main.c"
+        "battery.c"
         "ble_config.c"
         "device_config.c"
         "epd_1in54.c"
         "epd_paint.c"
         "font8x8.c"
         "network.c"
+        "serial_config.c"
         "tako_client.c"
     INCLUDE_DIRS "."
     REQUIRES
         bt
         driver
+        esp_adc
         esp_http_client
         esp_netif
         esp_wifi
