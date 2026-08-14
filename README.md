@@ -28,6 +28,8 @@ which lists these twice (module IO table + J10 connector); both copies agree.
 | EPD_TP_RST / EPD_TP_INT | 7 / 21 |
 | Board I2C SDA / SCL | 47 / 48 |
 | Battery ADC | 4 (ADC1 CH3, 1/2 divider) |
+| Battery power latch | 17 (active high) |
+| PWR button | 18 (active low) |
 
 Two things worth knowing:
 
@@ -127,6 +129,13 @@ The battery level is read on ADC1 channel 3 (GPIO4, 1/2 divider) and shown as a
 percentage at the right end of the footer. The mapping follows a rough LiPo
 discharge curve, so treat it as an estimate. When no battery is fitted (USB
 powered) the percentage is omitted.
+
+On the V2 board, the PWR button only connects the battery to `VSYS`
+momentarily. Firmware drives GPIO17 high at the start of `app_main()` and holds
+it through deep sleep so battery power remains available after PWR is released.
+When starting with only a battery connected, press PWR once to boot and latch
+the supply. While the device is sleeping, PWR wakes it for an immediate refresh;
+BOOT continues to wake directly into configuration mode.
 
 ## Tako API
 

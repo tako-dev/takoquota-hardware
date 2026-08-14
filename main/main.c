@@ -45,6 +45,28 @@ static bool s_display_state_written_this_boot;
 /* Serial configuration runs on its own copy so it cannot race the BLE path. */
 static device_config_t s_serial_cfg;
 
+static esp_err_t battery_power_latch_enable(void)
+{
+    gpio_config_t output = {
+        .pin_bit_mask = 1ULL << BOARD_PIN_BAT_POWER,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+    };
+
+    /* Preload high before enabling output so a cold boot cannot pulse it low. */
+    ESP_RETURN_ON_ERROR(gpio_set_level(BOARD_PIN_BAT_POWER, 1), TAG,
+                        "preload battery power latch");
+    ESP_RETURN_ON_ERROR(gpio_config(&output), TAG,
+                        "configure battery power latch");
+    ESP_RETURN_ON_ERROR(gpio_set_level(BOARD_PIN_BAT_POWER, 1), TAG,
+                        "enable battery power latch");
+
+    /* A deep-sleep wake leaves the pad held. Release only after restoring high. */
+    ESP_RETURN_ON_ERROR(rtc_gpio_hold_dis(BOARD_PIN_BAT_POWER), TAG,
+                        "release battery power latch hold");
+    return gpio_set_level(BOARD_PIN_BAT_POWER, 1);
+}
+
 static void serial_config_task(void *arg)
 {
     device_config_t *cfg = (device_config_t *)arg;
@@ -307,10 +329,25 @@ static bool boot_button_pressed(void)
     return gpio_get_level(BOARD_PIN_BOOT) == 0;
 }
 
+static bool ext1_wakeup_includes(gpio_num_t pin)
+{
+    return esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1 &&
+           (esp_sleep_get_ext1_wakeup_status() & (1ULL << pin)) != 0;
+}
+
 static bool configuration_requested(void)
 {
-    return esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1 ||
+    return ext1_wakeup_includes(BOARD_PIN_BOOT) ||
            boot_button_pressed();
+}
+
+static uint64_t prepare_active_low_wakeup_pin(gpio_num_t pin)
+{
+    ESP_ERROR_CHECK(rtc_gpio_init(pin));
+    ESP_ERROR_CHECK(rtc_gpio_set_direction(pin, RTC_GPIO_MODE_INPUT_ONLY));
+    ESP_ERROR_CHECK(rtc_gpio_pullup_en(pin));
+    ESP_ERROR_CHECK(rtc_gpio_pulldown_dis(pin));
+    return rtc_gpio_get_level(pin) == 0 ? 0 : 1ULL << pin;
 }
 
 static void enter_deep_sleep(uint32_t refresh_minutes)
@@ -318,14 +355,16 @@ static void enter_deep_sleep(uint32_t refresh_minutes)
     uint64_t sleep_us = (uint64_t)refresh_minutes * 60ULL * 1000000ULL;
     ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(sleep_us));
 
-    rtc_gpio_init(BOARD_PIN_BOOT);
-    rtc_gpio_set_direction(BOARD_PIN_BOOT, RTC_GPIO_MODE_INPUT_ONLY);
-    rtc_gpio_pullup_en(BOARD_PIN_BOOT);
-    rtc_gpio_pulldown_dis(BOARD_PIN_BOOT);
-    if (rtc_gpio_get_level(BOARD_PIN_BOOT) != 0) {
+    uint64_t button_wakeup_mask =
+        prepare_active_low_wakeup_pin(BOARD_PIN_BOOT) |
+        prepare_active_low_wakeup_pin(BOARD_PIN_PWR);
+    if (button_wakeup_mask != 0) {
         ESP_ERROR_CHECK(esp_sleep_enable_ext1_wakeup(
-            1ULL << BOARD_PIN_BOOT, ESP_EXT1_WAKEUP_ANY_LOW));
+            button_wakeup_mask, ESP_EXT1_WAKEUP_ANY_LOW));
     }
+
+    ESP_ERROR_CHECK(gpio_set_level(BOARD_PIN_BAT_POWER, 1));
+    ESP_ERROR_CHECK(rtc_gpio_hold_en(BOARD_PIN_BAT_POWER));
 
     ESP_LOGI(TAG, "deep sleep for %" PRIu32 " minutes", refresh_minutes);
     vTaskDelay(pdMS_TO_TICKS(100));
@@ -334,9 +373,14 @@ static void enter_deep_sleep(uint32_t refresh_minutes)
 
 void app_main(void)
 {
+    ESP_ERROR_CHECK(battery_power_latch_enable());
     ESP_ERROR_CHECK(init_nvs());
     setenv("TZ", "CST-8", 1);
     tzset();
+
+    if (ext1_wakeup_includes(BOARD_PIN_PWR)) {
+        ESP_LOGI(TAG, "PWR wake: running an immediate refresh");
+    }
 
     device_config_t config;
     ESP_ERROR_CHECK(device_config_load(&config));

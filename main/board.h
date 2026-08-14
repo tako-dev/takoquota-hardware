@@ -27,6 +27,15 @@
 #define BOARD_PIN_BOOT  GPIO_NUM_0
 
 /*
+ * Battery power control on the V2 board. PWR momentarily connects VBAT to
+ * VSYS; firmware must drive BAT_Control high to keep that path latched after
+ * the button is released. Both pins are RTC IOs so their state can be retained
+ * or monitored while the ESP32-S3 is in deep sleep.
+ */
+#define BOARD_PIN_BAT_POWER  GPIO_NUM_17
+#define BOARD_PIN_PWR        GPIO_NUM_18
+
+/*
  * GPIO6 carries the EPD3V3_EN net (Q2, an AO3401 P-channel MOSFET, gate pulled
  * up by R71 10K).
  *
