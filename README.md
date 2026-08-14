@@ -90,9 +90,10 @@ Bluetooth, connects to Wi-Fi, refreshes Tako quota, and immediately returns to
 deep sleep.
 
 When setup was opened on a device that already has valid settings, the screen
-shows `PWR: EXIT`. A short press of PWR discards any unsaved setup edits, reloads
-the saved configuration, and continues with a normal refresh. PWR cannot bypass
-setup on first boot when required settings are still missing.
+shows `HOLD BOOT: EXIT`. Release the BOOT press that opened setup, then hold
+BOOT for two seconds to discard any unsaved setup edits, reload the saved
+configuration, and continue with a normal refresh. BOOT cannot bypass setup on
+first boot when required settings are still missing.
 
 If a scheduled refresh cannot connect or fetch data, the previous successful
 e-paper image is preserved and the device retries at the next interval.

@@ -30,7 +30,8 @@ static uint8_t s_frame[EPD_BUF_SIZE];
 
 #define DISPLAY_STATE_MAGIC          0x45504432U
 #define FAST_REFRESHES_BEFORE_FULL   20U
-#define SETUP_EXIT_DEBOUNCE_MS       50U
+#define SETUP_EXIT_POLL_MS           50U
+#define SETUP_EXIT_HOLD_MS         2000U
 
 typedef struct {
     uint32_t magic;
@@ -81,29 +82,34 @@ static void serial_config_task(void *arg)
 static void setup_exit_button_task(void *arg)
 {
     (void)arg;
-    rtc_gpio_deinit(BOARD_PIN_PWR);
+    rtc_gpio_deinit(BOARD_PIN_BOOT);
     gpio_config_t input = {
-        .pin_bit_mask = 1ULL << BOARD_PIN_PWR,
+        .pin_bit_mask = 1ULL << BOARD_PIN_BOOT,
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
     };
     if (gpio_config(&input) != ESP_OK) {
-        ESP_LOGE(TAG, "failed to configure PWR setup exit button");
+        ESP_LOGE(TAG, "failed to configure BOOT setup exit button");
         vTaskSuspend(NULL);
     }
 
-    /* Ignore the press that may have powered or woken the board. */
-    while (gpio_get_level(BOARD_PIN_PWR) == 0) {
-        vTaskDelay(pdMS_TO_TICKS(SETUP_EXIT_DEBOUNCE_MS));
+    /* The BOOT press that entered setup must be released before exit is armed. */
+    while (gpio_get_level(BOARD_PIN_BOOT) == 0) {
+        vTaskDelay(pdMS_TO_TICKS(SETUP_EXIT_POLL_MS));
     }
 
     while (true) {
         if (!s_setup_exit_requested &&
-            gpio_get_level(BOARD_PIN_PWR) == 0) {
-            vTaskDelay(pdMS_TO_TICKS(SETUP_EXIT_DEBOUNCE_MS));
-            if (gpio_get_level(BOARD_PIN_PWR) == 0) {
-                ESP_LOGI(TAG, "PWR pressed: leaving configuration mode");
-                s_setup_exit_requested = true;
+            gpio_get_level(BOARD_PIN_BOOT) == 0) {
+            TickType_t pressed_at = xTaskGetTickCount();
+            while (gpio_get_level(BOARD_PIN_BOOT) == 0) {
+                if (xTaskGetTickCount() - pressed_at >=
+                    pdMS_TO_TICKS(SETUP_EXIT_HOLD_MS)) {
+                    ESP_LOGI(TAG, "BOOT held: leaving configuration mode");
+                    s_setup_exit_requested = true;
+                    break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(SETUP_EXIT_POLL_MS));
             }
         }
         if (s_setup_exit_requested) {
@@ -111,7 +117,7 @@ static void setup_exit_button_task(void *arg)
             ble_config_abort();
             serial_config_abort();
         }
-        vTaskDelay(pdMS_TO_TICKS(SETUP_EXIT_DEBOUNCE_MS));
+        vTaskDelay(pdMS_TO_TICKS(SETUP_EXIT_POLL_MS));
     }
 }
 
@@ -238,7 +244,7 @@ static esp_err_t show_setup_screen(bool can_exit)
     draw_centered(83, "USB SERIAL OR BLE", 1);
     draw_centered(103, "WAITING...", 1);
     draw_centered(148, "CONFIGURE THEN SAVE", 1);
-    draw_centered(172, can_exit ? "PWR: EXIT" : "FIRST SAVE WINS", 1);
+    draw_centered(172, can_exit ? "HOLD BOOT: EXIT" : "FIRST SAVE WINS", 1);
     return display_frame(true);
 }
 
@@ -440,7 +446,7 @@ void app_main(void)
         if (had_valid_config &&
             xTaskCreate(setup_exit_button_task, "setup_exit", 2048, NULL, 2,
                         &setup_exit_task) != pdPASS) {
-            ESP_LOGE(TAG, "failed to start PWR setup exit task");
+            ESP_LOGE(TAG, "failed to start BOOT setup exit task");
         }
 
         esp_err_t cfg_err = ble_config_run(&config, 0);
