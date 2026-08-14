@@ -20,6 +20,13 @@ esp_err_t epd_init(void);
  */
 esp_err_t epd_display(const uint8_t *buf);
 
+/*
+ * Update the panel with the V2 board's partial-refresh waveform. The previous
+ * framebuffer is required because the controller loses its old-image RAM
+ * while the ESP32 is in deep sleep.
+ */
+esp_err_t epd_display_fast(const uint8_t *previous, const uint8_t *buf);
+
 /* Drive the whole panel white without needing a caller-supplied buffer. */
 esp_err_t epd_clear(void);
 

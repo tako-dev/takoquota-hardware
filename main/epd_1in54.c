@@ -26,6 +26,7 @@ static esp_err_t epd_wait_idle(int timeout_ms);
 #define CMD_WRITE_RAM_RED        0x26
 #define CMD_WRITE_VCOM           0x2C
 #define CMD_WRITE_LUT            0x32
+#define CMD_DISPLAY_OPTION       0x37
 #define CMD_END_OPTION           0x3F
 #define CMD_BORDER_WAVEFORM      0x3C
 #define CMD_SET_RAM_X_RANGE      0x44
@@ -49,6 +50,24 @@ static const uint8_t s_full_lut[159] = {
     0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
     0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x0, 0x0, 0x0, 0x22, 0x17, 0x41,
     0x0, 0x32, 0x20,
+};
+
+/* Official partial-refresh waveform for the V2 board's GDEY0154D67 panel. */
+static const uint8_t s_partial_lut[159] = {
+    0x0, 0x40, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x80, 0x80, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x40, 0x40, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x80, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0xF, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1, 0x1, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x0, 0x0, 0x0, 0x02, 0x17, 0x41,
+    0xB0, 0x32, 0x28,
 };
 
 /* Send one command byte (D/C low). */
@@ -81,23 +100,23 @@ static esp_err_t epd_data1(uint8_t byte)
     return epd_data(&byte, 1);
 }
 
-static esp_err_t epd_load_full_lut(void)
+static esp_err_t epd_load_lut(const uint8_t *lut)
 {
     ESP_RETURN_ON_ERROR(epd_cmd(CMD_WRITE_LUT), TAG, "write lut");
-    ESP_RETURN_ON_ERROR(epd_data(s_full_lut, 153), TAG, "lut waveform");
+    ESP_RETURN_ON_ERROR(epd_data(lut, 153), TAG, "lut waveform");
     ESP_RETURN_ON_ERROR(epd_wait_idle(2000), TAG, "lut busy");
 
     ESP_RETURN_ON_ERROR(epd_cmd(CMD_END_OPTION), TAG, "end option");
-    ESP_RETURN_ON_ERROR(epd_data1(s_full_lut[153]), TAG, "end option val");
+    ESP_RETURN_ON_ERROR(epd_data1(lut[153]), TAG, "end option val");
 
     ESP_RETURN_ON_ERROR(epd_cmd(0x03), TAG, "gate voltage");
-    ESP_RETURN_ON_ERROR(epd_data1(s_full_lut[154]), TAG, "gate voltage val");
+    ESP_RETURN_ON_ERROR(epd_data1(lut[154]), TAG, "gate voltage val");
 
     ESP_RETURN_ON_ERROR(epd_cmd(0x04), TAG, "source voltage");
-    ESP_RETURN_ON_ERROR(epd_data(&s_full_lut[155], 3), TAG, "source voltage val");
+    ESP_RETURN_ON_ERROR(epd_data(&lut[155], 3), TAG, "source voltage val");
 
     ESP_RETURN_ON_ERROR(epd_cmd(CMD_WRITE_VCOM), TAG, "vcom");
-    return epd_data1(s_full_lut[158]);
+    return epd_data1(lut[158]);
 }
 
 static uint8_t reverse_bits(uint8_t byte)
@@ -271,17 +290,42 @@ esp_err_t epd_init(void)
 
     ESP_RETURN_ON_ERROR(epd_set_cursor_origin(), TAG, "cursor");
     ESP_RETURN_ON_ERROR(epd_wait_idle(6000), TAG, "init busy");
-    ESP_RETURN_ON_ERROR(epd_load_full_lut(), TAG, "full lut");
+    ESP_RETURN_ON_ERROR(epd_load_lut(s_full_lut), TAG, "full lut");
 
     ESP_LOGI(TAG, "panel initialised (%dx%d)", EPD_WIDTH, EPD_HEIGHT);
     return ESP_OK;
 }
 
-/* Kick off a full refresh and block until the panel settles. */
-static esp_err_t epd_refresh(void)
+static esp_err_t epd_init_partial(void)
+{
+    static const uint8_t display_option[10] = {
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
+    };
+
+    /* This is the partial-mode transition from Waveshare's V2 driver. */
+    epd_hw_reset();
+    ESP_RETURN_ON_ERROR(epd_wait_idle(2000), TAG, "partial reset busy");
+    ESP_RETURN_ON_ERROR(epd_load_lut(s_partial_lut), TAG, "partial lut");
+
+    ESP_RETURN_ON_ERROR(epd_cmd(CMD_DISPLAY_OPTION), TAG, "display option");
+    ESP_RETURN_ON_ERROR(epd_data(display_option, sizeof(display_option)), TAG,
+                        "display option val");
+
+    ESP_RETURN_ON_ERROR(epd_cmd(CMD_BORDER_WAVEFORM), TAG, "partial border");
+    ESP_RETURN_ON_ERROR(epd_data1(0x80), TAG, "partial border val");
+
+    ESP_RETURN_ON_ERROR(epd_cmd(CMD_DISPLAY_UPDATE_CTRL2), TAG,
+                        "partial prepare ctrl2");
+    ESP_RETURN_ON_ERROR(epd_data1(0xC0), TAG, "partial prepare mode");
+    ESP_RETURN_ON_ERROR(epd_cmd(CMD_MASTER_ACTIVATE), TAG, "partial prepare");
+    return epd_wait_idle(6000);
+}
+
+/* Kick off a refresh and block until the panel settles. */
+static esp_err_t epd_refresh(uint8_t update_mode)
 {
     ESP_RETURN_ON_ERROR(epd_cmd(CMD_DISPLAY_UPDATE_CTRL2), TAG, "update ctrl2");
-    ESP_RETURN_ON_ERROR(epd_data1(0xC7), TAG, "update mode");  /* full update */
+    ESP_RETURN_ON_ERROR(epd_data1(update_mode), TAG, "update mode");
 
     ESP_RETURN_ON_ERROR(epd_cmd(CMD_MASTER_ACTIVATE), TAG, "activate");
 
@@ -289,15 +333,12 @@ static esp_err_t epd_refresh(void)
     return epd_wait_idle(6000);
 }
 
-esp_err_t epd_display(const uint8_t *buf)
+static esp_err_t epd_write_frame(uint8_t ram_command, const uint8_t *buf)
 {
-    ESP_RETURN_ON_FALSE(s_spi != NULL, ESP_ERR_INVALID_STATE, TAG, "not initialised");
-    ESP_RETURN_ON_FALSE(buf != NULL, ESP_ERR_INVALID_ARG, TAG, "null buffer");
-
     ESP_RETURN_ON_ERROR(epd_set_window_full(), TAG, "window");
     ESP_RETURN_ON_ERROR(epd_set_cursor_origin(), TAG, "cursor");
 
-    ESP_RETURN_ON_ERROR(epd_cmd(CMD_WRITE_RAM_BW), TAG, "write ram");
+    ESP_RETURN_ON_ERROR(epd_cmd(ram_command), TAG, "write ram");
     for (int y = EPD_HEIGHT - 1; y >= 0; y--) {
         uint8_t row[EPD_ROW_BYTES];
         const uint8_t *src = &buf[y * EPD_ROW_BYTES];
@@ -307,7 +348,34 @@ esp_err_t epd_display(const uint8_t *buf)
         ESP_RETURN_ON_ERROR(epd_data(row, sizeof(row)), TAG, "frame row");
     }
 
-    return epd_refresh();
+    return ESP_OK;
+}
+
+esp_err_t epd_display(const uint8_t *buf)
+{
+    ESP_RETURN_ON_FALSE(s_spi != NULL, ESP_ERR_INVALID_STATE, TAG, "not initialised");
+    ESP_RETURN_ON_FALSE(buf != NULL, ESP_ERR_INVALID_ARG, TAG, "null buffer");
+
+    ESP_RETURN_ON_ERROR(epd_write_frame(CMD_WRITE_RAM_BW, buf), TAG,
+                        "full frame");
+
+    return epd_refresh(0xC7);
+}
+
+esp_err_t epd_display_fast(const uint8_t *previous, const uint8_t *buf)
+{
+    ESP_RETURN_ON_FALSE(s_spi != NULL, ESP_ERR_INVALID_STATE, TAG, "not initialised");
+    ESP_RETURN_ON_FALSE(previous != NULL, ESP_ERR_INVALID_ARG, TAG,
+                        "null previous buffer");
+    ESP_RETURN_ON_FALSE(buf != NULL, ESP_ERR_INVALID_ARG, TAG, "null buffer");
+
+    ESP_RETURN_ON_ERROR(epd_init_partial(), TAG, "partial init");
+    ESP_RETURN_ON_ERROR(epd_write_frame(CMD_WRITE_RAM_RED, previous), TAG,
+                        "previous frame");
+    ESP_RETURN_ON_ERROR(epd_write_frame(CMD_WRITE_RAM_BW, buf), TAG,
+                        "partial frame");
+
+    return epd_refresh(0xCF);
 }
 
 esp_err_t epd_clear(void)
@@ -329,7 +397,7 @@ esp_err_t epd_clear(void)
         ESP_RETURN_ON_ERROR(epd_data(row, sizeof(row)), TAG, "blank row");
     }
 
-    return epd_refresh();
+    return epd_refresh(0xC7);
 }
 
 esp_err_t epd_sleep(void)

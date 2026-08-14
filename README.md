@@ -90,6 +90,19 @@ deep sleep.
 If a scheduled refresh cannot connect or fetch data, the previous successful
 e-paper image is preserved and the device retries at the next interval.
 
+## Display refresh strategy
+
+Scheduled updates use Waveshare's V2 partial-refresh waveform to avoid the
+several black/white flashes of a full refresh. The previous 5000-byte frame and
+refresh counter are retained in RTC memory across deep sleep and protected by
+a checksum.
+
+After 20 successful fast refreshes, the next display update uses a full refresh
+to clear accumulated ghosting, then starts a new cycle. A cold boot, invalid
+retained state, interrupted display update, or the setup screen also forces a
+full refresh. Serial logs show `fast display refresh (n/20)` or
+`full display refresh` for each update.
+
 ## Serial (USB) setup
 
 Instead of Bluetooth you can configure the device over the native USB port.

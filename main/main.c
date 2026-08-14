@@ -12,6 +12,7 @@
 #include "driver/rtc_io.h"
 #include "epd_1in54.h"
 #include "epd_paint.h"
+#include "esp_attr.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
@@ -26,6 +27,20 @@ static const char *TAG = "main";
 
 /* One 200x200 mono frame is 5000 bytes - fine as a static allocation. */
 static uint8_t s_frame[EPD_BUF_SIZE];
+
+#define DISPLAY_STATE_MAGIC          0x45504432U
+#define FAST_REFRESHES_BEFORE_FULL   20U
+
+typedef struct {
+    uint32_t magic;
+    uint32_t checksum;
+    uint32_t fast_refresh_count;
+    uint8_t frame[EPD_BUF_SIZE];
+} display_state_t;
+
+/* Retained while the ESP32 is in deep sleep; validated before every use. */
+RTC_NOINIT_ATTR static display_state_t s_display_state;
+static bool s_display_state_written_this_boot;
 
 /* Serial configuration runs on its own copy so it cannot race the BLE path. */
 static device_config_t s_serial_cfg;
@@ -57,17 +72,91 @@ static void draw_centered(int y, const char *text, int scale)
     epd_paint_text_scaled(s_frame, x < 0 ? 0 : x, y, text, EPD_BLACK, scale);
 }
 
-static esp_err_t display_frame(void)
+static uint32_t display_state_checksum(const uint8_t *frame,
+                                       uint32_t fast_refresh_count)
 {
+    uint32_t hash = 2166136261U;
+
+    for (size_t i = 0; i < EPD_BUF_SIZE; i++) {
+        hash = (hash ^ frame[i]) * 16777619U;
+    }
+    for (size_t i = 0; i < sizeof(fast_refresh_count); i++) {
+        hash = (hash ^ (uint8_t)(fast_refresh_count >> (i * 8))) * 16777619U;
+    }
+    return hash;
+}
+
+static bool display_state_is_valid(void)
+{
+    esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
+    bool retained_from_deep_sleep = wakeup == ESP_SLEEP_WAKEUP_TIMER ||
+                                    wakeup == ESP_SLEEP_WAKEUP_EXT1;
+
+    if (!s_display_state_written_this_boot && !retained_from_deep_sleep) {
+        return false;
+    }
+    if (s_display_state.magic != DISPLAY_STATE_MAGIC ||
+        s_display_state.fast_refresh_count > FAST_REFRESHES_BEFORE_FULL) {
+        return false;
+    }
+    return s_display_state.checksum ==
+           display_state_checksum(s_display_state.frame,
+                                  s_display_state.fast_refresh_count);
+}
+
+static void display_state_save(uint32_t fast_refresh_count)
+{
+    memcpy(s_display_state.frame, s_frame, sizeof(s_display_state.frame));
+    s_display_state.fast_refresh_count = fast_refresh_count;
+    s_display_state.checksum = display_state_checksum(
+        s_display_state.frame, s_display_state.fast_refresh_count);
+    s_display_state.magic = DISPLAY_STATE_MAGIC;
+    s_display_state_written_this_boot = true;
+}
+
+static esp_err_t display_frame(bool force_full)
+{
+    bool previous_valid = display_state_is_valid();
+    uint32_t completed_fast_refreshes = previous_valid
+        ? s_display_state.fast_refresh_count
+        : 0;
+    bool use_fast_refresh = previous_valid && !force_full &&
+                            completed_fast_refreshes <
+                                FAST_REFRESHES_BEFORE_FULL;
+
+    /* A reset during an update must make the next boot fall back to full. */
+    s_display_state.magic = 0;
+
     esp_err_t err = epd_init();
     if (err == ESP_OK) {
-        err = epd_display(s_frame);
+        if (use_fast_refresh) {
+            ESP_LOGI(TAG, "fast display refresh (%" PRIu32 "/%u)",
+                     completed_fast_refreshes + 1,
+                     FAST_REFRESHES_BEFORE_FULL);
+            err = epd_display_fast(s_display_state.frame, s_frame);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "fast refresh failed; retrying with full refresh");
+                use_fast_refresh = false;
+                err = epd_init();
+                if (err == ESP_OK) {
+                    err = epd_display(s_frame);
+                }
+            }
+        } else {
+            ESP_LOGI(TAG, "full display refresh%s",
+                     force_full ? " (forced)" : "");
+            err = epd_display(s_frame);
+        }
         if (err == ESP_OK) {
             err = epd_sleep();
         }
     }
     if (err != ESP_OK) {
         epd_power_off();
+    } else {
+        display_state_save(use_fast_refresh
+                               ? completed_fast_refreshes + 1
+                               : 0);
     }
     return err;
 }
@@ -89,7 +178,7 @@ static esp_err_t show_setup_screen(void)
     draw_centered(103, "WAITING...", 1);
     draw_centered(148, "CONFIGURE THEN SAVE", 1);
     draw_centered(172, "FIRST SAVE WINS", 1);
-    return display_frame();
+    return display_frame(true);
 }
 
 static esp_err_t show_error_screen(const char *reason)
@@ -100,7 +189,7 @@ static esp_err_t show_error_screen(const char *reason)
     draw_centered(112, "LAST UPDATE FAILED", 1);
     draw_centered(145, "PRESS BOOT", 1);
     draw_centered(162, "FOR BLE SETUP", 1);
-    return display_frame();
+    return display_frame(false);
 }
 
 static void format_quota_number(double value, char *output, size_t capacity)
@@ -192,7 +281,7 @@ static esp_err_t show_quota_screen(const tako_quota_t *quota, int battery_pct)
         time_x = right_x(batt_x - 6, quota->fetched_at, 1);
     }
     epd_paint_text(s_frame, time_x, EPD_HEIGHT - 13, quota->fetched_at, EPD_WHITE);
-    return display_frame();
+    return display_frame(false);
 }
 
 static esp_err_t init_nvs(void)
